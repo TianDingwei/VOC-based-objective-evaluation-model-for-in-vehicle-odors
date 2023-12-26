@@ -1,0 +1,125 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder
+
+# Read the data
+train_data = pd.read_excel('Train Set.xlsx', sheet_name='Interiors')
+test_data = pd.read_excel('Validation Set.xlsx', sheet_name='Interiors')
+val_data = pd.read_excel('Test Set.xlsx',sheet_name='Interiors')
+
+X_train = train_data.iloc[:, :-1]
+y_train = train_data.iloc[:, -1]
+X_test = test_data.iloc[:, :-1]
+y_test = test_data.iloc[:, -1]
+X_val = val_data.iloc[:, :-1]
+y_val = val_data.iloc[:, -1]
+
+# Create a LabelEncoder instance
+encoder = LabelEncoder()
+
+# Fit the encoder to the training data and then transform the training, validation, and test data
+y_train = encoder.fit_transform(y_train)
+y_test = encoder.transform(y_test)
+y_val = encoder.transform(y_val)
+
+from sklearn.preprocessing import StandardScaler
+# Create a StandardScaler instance
+scaler = StandardScaler()
+
+# Fit the scaler to the training data and then transform the training, validation, and test data
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+X_val = scaler.transform(X_val)
+
+# Convert DataFrame to Tensor
+X_train = torch.tensor(X_train, dtype=torch.float)
+y_train = torch.tensor(y_train, dtype=torch.long)
+X_test = torch.tensor(X_test, dtype=torch.float)
+y_test = torch.tensor(y_test, dtype=torch.long)
+X_val = torch.tensor(X_val, dtype=torch.float)
+y_val = torch.tensor(y_val, dtype=torch.long)
+
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(9, 11),  # First layer
+            nn.Tanh(),
+            nn.Linear(11, 22),
+            nn.Sigmoid(),
+            nn.Linear(22, 6),  # Third layer
+        )
+
+    def forward(self, x):
+        x = self.layers(x)
+        return x
+
+net = Net()
+
+# Define the loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+
+best_acc = 0.0
+best_model_state = None
+
+# Use the validation set to tune the model hyperparameters
+net = Net()  
+optimizer = optim.AdamW(net.parameters(), lr=1e-2, weight_decay=0.1)  # Optimizer needs to be reinitialized as well
+
+for epoch in range(1000):  # loop over the dataset multiple times
+    # zero the parameter gradients
+    optimizer.zero_grad()
+
+    # forward + backward + optimize
+    outputs = net(X_train)
+    loss = criterion(outputs, y_train)
+    loss.backward()
+    optimizer.step()
+
+    # print statistics
+    if epoch % 10 == 0:
+        val_outputs = net(X_val)
+        _, predicted = torch.max(val_outputs.data, 1)
+        correct = (predicted == y_val).type(torch.float).sum().item()
+        accuracy = correct / len(y_val)
+
+        if accuracy > best_acc:
+            best_acc = accuracy
+            best_model_state = net.state_dict()
+
+        if accuracy > 0.7:
+            print('Early stopping at epoch: ', epoch)
+            break
+
+# Load the model with the highest accuracy
+net.load_state_dict(best_model_state)
+
+# Compute the accuracy
+train_outputs = net(X_train)
+_, predicted = torch.max(train_outputs.data, 1)
+train_acc = accuracy_score(y_train, predicted)
+
+test_outputs = net(X_test)                        
+_, predicted = torch.max(test_outputs.data, 1)
+test_acc = accuracy_score(y_test, predicted)
+
+val_outputs = net(X_val)
+_, predicted = torch.max(val_outputs.data, 1)
+val_acc = accuracy_score(y_val, predicted)
+
+print('Train Accuracy: ', train_acc)
+print('Validation Accuracy: ', val_acc)
+print('Test Accuracy: ', test_acc)
+
+
+# Print true and predicted labels for the validation set
+print('Validation True: ', encoder.inverse_transform(y_val))
+print('Validation Predicted: ', encoder.inverse_transform(predicted.numpy()))
+
+# Print true and predicted labels for the test set
+print('Test True: ', encoder.inverse_transform(y_test))
+print('Test Predicted: ', encoder.inverse_transform(predicted.numpy()))

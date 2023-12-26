@@ -1,0 +1,140 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+import os
+
+
+# Check if GPU is available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using {device} for training.")
+
+# Load the data
+train_data = pd.read_excel('Train Set.xlsx', sheet_name='Interiors')
+test_data = pd.read_excel('Validation Set.xlsx', sheet_name='Interiors')
+val_data = pd.read_excel('Test Set.xlsx',sheet_name='Interiors')
+
+X_train = train_data.iloc[:, :-1]
+y_train = train_data.iloc[:, -1]
+X_val = val_data.iloc[:, :-1]
+y_val = val_data.iloc[:, -1]
+X_test = test_data.iloc[:, :-1]
+y_test = test_data.iloc[:, -1]
+
+# Label encoding
+encoder = LabelEncoder()
+y_train = encoder.fit_transform(y_train)
+y_val = encoder.transform(y_val)
+y_test = encoder.transform(y_test)
+
+# Check for NaN or Inf values
+assert not np.any(np.isnan(X_train))
+assert not np.any(np.isnan(X_test))
+assert not np.any(np.isinf(X_train))
+assert not np.any(np.isinf(X_test))
+
+# Convert to tensors
+X_train = torch.tensor(X_train.values, dtype=torch.float).to(device)
+y_train = torch.tensor(y_train, dtype=torch.long).to(device)
+X_val = torch.tensor(X_val.values, dtype=torch.float).to(device)
+y_val = torch.tensor(y_val, dtype=torch.long).to(device)
+X_test = torch.tensor(X_test.values, dtype=torch.float).to(device)
+y_test = torch.tensor(y_test, dtype=torch.long).to(device)
+
+class CNNLSTM(nn.Module):
+    def __init__(self, num_samples):
+        super(CNNLSTM, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv1d(in_channels=1, out_channels=16, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm1d(16),
+            nn.ReLU(),
+            nn.Conv1d(in_channels=16, out_channels=32, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            nn.Conv1d(in_channels=32, out_channels=64, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+        )
+        self.fc = nn.Linear(64, 64)
+        self.dropout = nn.Dropout(0.2)  # Add Dropout layer
+        self.lstm = nn.LSTM(input_size=64, hidden_size=num_samples, num_layers=1, batch_first=True, bidirectional=True)
+        self.fc1 = nn.Linear(9 * 2 * num_samples, 150)
+        self.fc2 = nn.Linear(150, 6)
+
+    def forward(self, x):
+        x = x.unsqueeze(1)
+        x = self.conv(x)
+        x = x.permute(0, 2, 1)
+        x = self.fc(x)
+        x = self.dropout(x)  # Apply Dropout layer here
+        x, _ = self.lstm(x)
+        x = x.reshape(x.size(0), -1)
+        x = self.fc1(x)
+        x = self.fc2(x)
+        return x
+
+# Get the number of samples in the training set
+num_samples = X_train.shape[0]
+
+# Instantiate the CNN-LSTM model with the number of samples
+net = CNNLSTM(num_samples).to(device)
+
+# Define the loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+
+# Training loop
+best_val_acc = 0.0
+best_model_state = None
+
+for epoch in range(500):
+    net.train()  # Switch to train mode
+    optimizer = optim.AdamW(net.parameters(), lr=1e-3, weight_decay=0.1)
+    optimizer.zero_grad()
+    outputs = net(X_train)
+    loss = criterion(outputs, y_train)
+    loss.backward()
+    optimizer.step()
+
+    # Print statistics
+    if epoch % 50 == 0:
+        net.eval()  # Switch to evaluate mode
+        val_outputs = net(X_val)
+        _, predicted = torch.max(val_outputs.data, 1)
+        correct = (predicted == y_val).type(torch.float).sum().item()
+        accuracy = correct / len(y_val)
+
+        print(f"Epoch {epoch}: Loss: {loss.item():.4f}, Validation Accuracy: {accuracy:.4f}")
+
+        if accuracy > best_val_acc:
+            best_val_acc = accuracy
+            # Save the best model state here
+            best_model_state = net.state_dict()
+
+        if accuracy > 0.8:
+            print('Early stopping at Epoch: ', epoch)
+            break
+
+# Load the best model state after all epochs
+if best_model_state is not None:
+    net.load_state_dict(best_model_state)
+
+# Evaluate the model
+test_outputs = net(X_test)
+_, predicted = torch.max(test_outputs.data, 1)
+test_acc = accuracy_score(y_test.cpu().numpy(), predicted.cpu().numpy())
+
+print('Test Accuracy: ', test_acc)
+print('Test Set Predicted Labels: ', encoder.inverse_transform(predicted.cpu().numpy()))
+print('Test Set True Labels: ', encoder.inverse_transform(y_test.cpu().numpy()))
+
+# Validation
+train_outputs = net(X_train)
+_, predicted = torch.max(train_outputs.data, 1)
+train_acc = accuracy_score(y_train.cpu().numpy(), predicted.cpu().numpy())
+
+print('Train Accuracy: ', train_acc)
